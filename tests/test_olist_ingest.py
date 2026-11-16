@@ -41,9 +41,10 @@ def spark_mocks(ingest):
 
 def test_cloud_requires_key(ingest, spark_mocks):
     builder, _ = spark_mocks
-    with patch.dict(os.environ, {"AZURE_STORAGE_ACCOUNT": "example"}, clear=True):
-        with pytest.raises(ValueError, match="AZURE_STORAGE_KEY"):
-            ingest.build_spark()
+    with patch.dict(os.environ, {"AZURE_STORAGE_ACCOUNT": "example"}, clear=True), pytest.raises(
+        ValueError, match="AZURE_STORAGE_KEY"
+    ):
+        ingest.build_spark()
     builder.getOrCreate.assert_not_called()
 
 
