@@ -29,6 +29,64 @@ Put the extracted Olist CSV files in `data/olist/`:
 
 Download: https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce
 
+## Local Docker Compose setup
+
+The Compose stack is for development only. It builds an Airflow image with Java
+and PySpark, runs PostgreSQL for Airflow metadata, and starts Azurite. The
+LocalExecutor runs up to two tasks at a time. Allow at least 4 GB of Docker
+memory (8 GB recommended), plus enough for the Spark jobs.
+
+1. Install Docker with Compose and the Azure CLI. From the project root, create
+   an untracked `.env` file containing the following values:
+
+   ```text
+   POSTGRES_PASSWORD=<random-hex>
+   AIRFLOW_ADMIN_PASSWORD=<random-hex>
+   AIRFLOW_FERNET_KEY=<generated-fernet-key>
+   AIRFLOW_WEBSERVER_SECRET_KEY=<random-hex>
+   ```
+
+   Generate a separate value for each random-hex field using
+   `python -c "import secrets; print(secrets.token_hex(32))"` and generate the
+   Fernet key with
+   `python -c "import base64, secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"`.
+   Keep these values private and retain them across restarts. Use hex for the
+   PostgreSQL password so it is safe in the database connection URL. Changing
+   the password in `.env` does not update an existing PostgreSQL volume or
+   Airflow admin user.
+2. Start the stack and wait for initialization:
+
+   ```bash
+   docker compose up --build -d
+   docker compose ps
+   docker compose logs airflow-init azurite
+   ```
+
+   Check that `airflow-init` exited successfully and Azurite is listening
+   before proceeding. The first Spark submission also needs internet access to
+   download the Hadoop Azure package.
+3. Create the default Blob container using Azure CLI on the host:
+
+   ```bash
+   az storage container create --name olist-data \
+     --connection-string 'UseDevelopmentStorage=true'
+   ```
+
+   If you set `AZURE_STORAGE_CONTAINER`, create that container instead.
+4. Open http://localhost:8080, sign in as `admin` with
+   `AIRFLOW_ADMIN_PASSWORD`, then unpause and trigger `olist_bronze_ingestion`.
+   Inspect the task logs in Airflow and list the resulting blobs:
+
+   ```bash
+   az storage blob list --container-name olist-data \
+     --connection-string 'UseDevelopmentStorage=true' --output table
+   ```
+
+Stop the stack with `docker compose down`; the named PostgreSQL, Azurite, and
+Airflow log volumes persist. The scheduler shares Azurite's network namespace
+because WASB's emulator endpoint is localhost; don't scale or move the scheduler
+to a separate namespace without changing the storage integration.
+
 ## Expected runtime layout
 
 The Airflow worker must have:
@@ -44,9 +102,9 @@ The Spark runtime must include Hadoop Azure support. The DAG requests
 version bundled with your Spark distribution. If your Spark image uses a
 different Hadoop version, change the package version accordingly.
 
-### Local storage with Azurite
+### Local storage without Compose
 
-Start Azurite's blob service, for example on the host running Spark:
+For a Spark process running on the host, start Azurite's blob service:
 
 ```bash
 docker run -d --name azurite -p 127.0.0.1:10000:10000 \
@@ -64,14 +122,17 @@ az storage container create --name olist-data \
 Hadoop WASB's `storageemulator` mode uses the emulator's built-in development
 account at `127.0.0.1:10000`; it cannot point to a separate Docker hostname.
 Every Spark process accessing storage must share Azurite's network namespace.
-For a containerized Airflow worker, arrange for Azurite to run in that same
-namespace, and create the container from a process that can reach its port.
+For a separately configured containerized Airflow worker, arrange for Azurite
+to run in that same namespace, and create the container from a process that can
+reach its port.
 Merely putting separate Airflow and Azurite containers on the same Docker
 network is not sufficient. Azurite does not emulate ADLS Gen2; this project
 uses the Blob Storage WASB connector instead of ABFS.
 
 The default settings target Azurite. `config/.env.example` lists the environment
-variables; copying it alone does not load them into Airflow or Spark.
+variables; copying it alone does not load them into Airflow or Spark. Compose
+reads optional `AZURE_STORAGE_ACCOUNT`, `AZURE_STORAGE_CONTAINER`, and
+`AZURE_STORAGE_KEY` values from the root `.env` or the host environment.
 
 ### Azure Blob Storage
 
@@ -110,8 +171,9 @@ The container can also be selected with `--container`.
 
 ## Airflow
 
-Copy `dags/olist_ingestion_dag.py` into your Airflow DAGs folder and mount the
-Spark script and source data at the paths configured at the top of the DAG.
+The Compose setup mounts the DAG, Spark script, and source data at the required
+paths. For another Airflow deployment, copy the DAG into its DAGs folder and
+mount the Spark script and source data at the paths configured in the DAG.
 The DAG runs daily at 03:00 UTC. Because Olist is a static historical dataset,
 this schedule is a demonstration: for a realistic incremental simulation,
 create daily source extracts or add a parameterized event-date filter in a
@@ -129,5 +191,5 @@ later iteration.
 ## Notes
 
 This is a Bronze ingestion starter, not a complete production deployment.
-The DAG assumes a custom Airflow image/container that has Spark installed.
+The Compose stack and image are intended for local development, not production.
 Azurite's built-in development account is only for local development.
