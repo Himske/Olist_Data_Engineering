@@ -1,0 +1,4 @@
+# Install these in the Airflow environment if not already present.
+pyspark==3.5.1
+apache-airflow==2.9.3
+pendulum>=3.0,<4

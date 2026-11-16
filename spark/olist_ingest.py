@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Ingest one Olist CSV into a date-partitioned MinIO/S3 Bronze Parquet path."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import current_timestamp, input_file_name, lit
+
+
+DATASETS = {
+    "customers": "olist_customers_dataset.csv",
+    "geolocation": "olist_geolocation_dataset.csv",
+    "order_items": "olist_order_items_dataset.csv",
+    "order_payments": "olist_order_payments_dataset.csv",
+    "order_reviews": "olist_order_reviews_dataset.csv",
+    "orders": "olist_orders_dataset.csv",
+    "products": "olist_products_dataset.csv",
+    "sellers": "olist_sellers_dataset.csv",
+    "category_translation": "product_category_name_translation.csv",
+}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dataset", required=True, choices=sorted(DATASETS))
+    parser.add_argument("--input-dir", default=os.getenv("OLIST_INPUT_DIR", "/opt/airflow/data/olist"))
+    parser.add_argument("--batch-date", default=os.getenv("BATCH_DATE", datetime.now(timezone.utc).date().isoformat()))
+    parser.add_argument("--bucket", default=os.getenv("S3_BUCKET", "olist-data"))
+    parser.add_argument("--output-prefix", default=os.getenv("BRONZE_PREFIX", "bronze"))
+    return parser.parse_args()
+
+
+def validate_batch_date(value: str) -> str:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("batch-date must use YYYY-MM-DD") from exc
+
+
+def build_spark() -> SparkSession:
+    endpoint = os.getenv("S3_ENDPOINT", "http://minio:9000")
+    access_key = os.getenv("S3_ACCESS_KEY", "minioadmin")
+    secret_key = os.getenv("S3_SECRET_KEY", "minioadmin")
+    region = os.getenv("S3_REGION", "us-east-1")
+
+    return (
+        SparkSession.builder
+        .appName("olist-bronze-ingestion")
+        .config("spark.hadoop.fs.s3a.endpoint", endpoint)
+        .config("spark.hadoop.fs.s3a.access.key", access_key)
+        .config("spark.hadoop.fs.s3a.secret.key", secret_key)
+        .config("spark.hadoop.fs.s3a.path.style.access", "true")
+        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", endpoint.startswith("https://").__str__().lower())
+        .config("spark.hadoop.fs.s3a.endpoint.region", region)
+        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        .config("spark.sql.session.timeZone", "UTC")
+        .getOrCreate()
+    )
+
+
+def main() -> int:
+    args = parse_args()
+    batch_date = validate_batch_date(args.batch_date)
+    filename = DATASETS[args.dataset]
+    source = Path(args.input_dir) / filename
+
+    if not source.is_file():
+        print(f"ERROR: source file not found: {source}", file=sys.stderr)
+        return 2
+    if source.stat().st_size == 0:
+        print(f"ERROR: source file is empty: {source}", file=sys.stderr)
+        return 2
+
+    spark = build_spark()
+    spark.sparkContext.setLogLevel(os.getenv("SPARK_LOG_LEVEL", "WARN"))
+
+    try:
+        # Keep source fields as strings in Bronze; cast and standardize in Silver.
+        df = (
+            spark.read
+            .option("header", "true")
+            .option("inferSchema", "false")
+            .option("mode", "FAILFAST")
+            .option("encoding", "UTF-8")
+            .csv(str(source))
+        )
+
+        if not df.columns:
+            raise ValueError(f"No columns found in CSV: {source}")
+
+        df = (
+            df.withColumn("_ingested_at", current_timestamp())
+              .withColumn("_source_file", input_file_name())
+              .withColumn("_batch_id", lit(batch_date))
+              .withColumn("_dataset", lit(args.dataset))
+        )
+
+        output = (
+            f"s3a://{args.bucket}/{args.output_prefix}/"
+            f"{args.dataset}/batch_date={batch_date}"
+        )
+
+        # Overwrite only this dataset's batch-date folder. Retries are idempotent
+        # for a given dataset + batch date; other dates remain untouched.
+        (
+            df.write
+            .mode("overwrite")
+            .format("parquet")
+            .save(output)
+        )
+
+        print(f"SUCCESS dataset={args.dataset} output={output} rows={df.count()}")
+        return 0
+    finally:
+        spark.stop()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
