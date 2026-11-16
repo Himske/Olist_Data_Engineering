@@ -1,4 +1,4 @@
-"""Airflow DAG: parallel ingestion of Olist CSVs into MinIO Bronze."""
+"""Airflow DAG: parallel ingestion of Olist CSVs into Azure Blob Bronze."""
 
 from datetime import timedelta
 
@@ -31,31 +31,26 @@ default_args = {
 
 with DAG(
     dag_id="olist_bronze_ingestion",
-    description="Ingest all Olist source CSVs into MinIO Bronze as Parquet",
+    description="Ingest all Olist source CSVs into Azure Blob Bronze as Parquet",
     default_args=default_args,
     start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
     schedule="0 3 * * *",
     catchup=False,
     max_active_runs=1,
-    tags=["olist", "pyspark", "minio", "bronze"],
+    tags=["olist", "pyspark", "azure", "bronze"],
 ) as dag:
     for dataset in DATASETS:
         BashOperator(
             task_id=f"ingest_{dataset}",
             bash_command=(
                 f"{SPARK_SUBMIT} "
-                f"--packages org.apache.hadoop:hadoop-aws:3.3.4 "
+                f"--packages org.apache.hadoop:hadoop-azure:3.3.4 "
                 f"{SCRIPT} "
                 f"--dataset {dataset} "
                 "--batch-date '{{ ds }}' "
                 "--input-dir /opt/airflow/data/olist"
             ),
             env={
-                "S3_ENDPOINT": "http://minio:9000",
-                "S3_BUCKET": "olist-data",
-                "S3_ACCESS_KEY": "{{ var.value.minio_access_key }}",
-                "S3_SECRET_KEY": "{{ var.value.minio_secret_key }}",
-                "S3_REGION": "us-east-1",
                 "PYSPARK_PYTHON": "python3",
             },
             append_env=True,

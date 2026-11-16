@@ -1,7 +1,8 @@
 # Olist PySpark + Airflow Bronze ingestion
 
 This starter project ingests the nine CSV files from the Brazilian Olist public
-e-commerce dataset into a MinIO bucket as date-partitioned Parquet files.
+e-commerce dataset into an Azure Blob Storage container as date-partitioned
+Parquet files. Azurite emulates Blob Storage for local development.
 
 ## What it does
 
@@ -35,26 +36,62 @@ The Airflow worker must have:
 - `spark-submit` available at `/opt/spark/bin/spark-submit`
 - this project mounted at `/opt/airflow/project`
 - Olist CSVs mounted at `/opt/airflow/data/olist`
-- network access to MinIO using hostname `minio` and port `9000`
+- access to Azurite at `127.0.0.1:10000` in its own network namespace, or
+  network access to an Azure Blob Storage account
 
-The Spark runtime must include Hadoop S3A support. The DAG requests
-`org.apache.hadoop:hadoop-aws:3.3.4`; this version must match the Hadoop
+The Spark runtime must include Hadoop Azure support. The DAG requests
+`org.apache.hadoop:hadoop-azure:3.3.4`; this version must match the Hadoop
 version bundled with your Spark distribution. If your Spark image uses a
 different Hadoop version, change the package version accordingly.
 
-Create the MinIO bucket `olist-data` before running the DAG. Configure Airflow
-Variables `minio_access_key` and `minio_secret_key`, or replace the Jinja
-references in the DAG with your preferred secrets backend. Do not commit real
-credentials to Git.
+### Local storage with Azurite
+
+Start Azurite's blob service, for example on the host running Spark:
+
+```bash
+docker run -d --name azurite -p 127.0.0.1:10000:10000 \
+  -v azurite-data:/data mcr.microsoft.com/azure-storage/azurite \
+  azurite-blob --blobHost 0.0.0.0 --location /data
+```
+
+Create the `olist-data` container using Azure CLI on that host:
+
+```bash
+az storage container create --name olist-data \
+  --connection-string 'UseDevelopmentStorage=true'
+```
+
+Hadoop WASB's `storageemulator` mode uses the emulator's built-in development
+account at `127.0.0.1:10000`; it cannot point to a separate Docker hostname.
+Every Spark process accessing storage must share Azurite's network namespace.
+For a containerized Airflow worker, arrange for Azurite to run in that same
+namespace, and create the container from a process that can reach its port.
+Merely putting separate Airflow and Azurite containers on the same Docker
+network is not sufficient. Azurite does not emulate ADLS Gen2; this project
+uses the Blob Storage WASB connector instead of ABFS.
+
+The default settings target Azurite. `config/.env.example` lists the environment
+variables; copying it alone does not load them into Airflow or Spark.
+
+### Azure Blob Storage
+
+Create a container in your Azure storage account, then set
+`AZURE_STORAGE_ACCOUNT` to the account name and `AZURE_STORAGE_CONTAINER` to
+the container name. Provide `AZURE_STORAGE_KEY` securely to the Spark driver,
+for example through the Airflow worker's secrets-backed environment. The DAG
+inherits these variables. Never commit real credentials; Hadoop's account key
+is passed into Spark configuration, so restrict access to Spark configuration,
+logs, and its UI. This starter uses shared-key authentication and the standard
+Azure public-cloud Blob endpoint.
 
 ## Run one dataset manually
 
-From an environment with PySpark, the matching `hadoop-aws` package, and access
-to MinIO:
+From an environment with PySpark, the matching `hadoop-azure` package, and
+access to Azurite:
 
 ```bash
 spark-submit \
-  --packages org.apache.hadoop:hadoop-aws:3.3.4 \
+  --packages org.apache.hadoop:hadoop-azure:3.3.4 \
   spark/olist_ingest.py \
   --dataset orders \
   --input-dir ./data/olist \
@@ -64,8 +101,12 @@ spark-submit \
 Output example:
 
 ```text
-s3a://olist-data/bronze/orders/batch_date=2018-10-17/
+wasb://olist-data@storageemulator/bronze/orders/batch_date=2018-10-17/
 ```
+
+For Azure Blob Storage the output is
+`wasbs://olist-data@<account>.blob.core.windows.net/bronze/orders/batch_date=2018-10-17/`.
+The container can also be selected with `--container`.
 
 ## Airflow
 
@@ -78,7 +119,7 @@ later iteration.
 
 ## Important next steps
 
-1. Add a MinIO bucket initialization step (or create the bucket in the console).
+1. Automate Azure Blob container initialization.
 2. Add source-level schema contracts and expected-column checks.
 3. Add a Silver job to cast dates, numeric values, and identifiers.
 4. Add row-count and duplicate-key checks.
@@ -89,5 +130,4 @@ later iteration.
 
 This is a Bronze ingestion starter, not a complete production deployment.
 The DAG assumes a custom Airflow image/container that has Spark installed.
-The default MinIO credentials shown in `.env.example` are for local development
-only and must be replaced.
+Azurite's built-in development account is only for local development.

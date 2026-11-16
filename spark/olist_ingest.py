@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Ingest one Olist CSV into a date-partitioned MinIO/S3 Bronze Parquet path."""
+"""Ingest one Olist CSV into date-partitioned Azure Blob Storage Parquet."""
 
 from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", required=True, choices=sorted(DATASETS))
     parser.add_argument("--input-dir", default=os.getenv("OLIST_INPUT_DIR", "/opt/airflow/data/olist"))
     parser.add_argument("--batch-date", default=os.getenv("BATCH_DATE", datetime.now(timezone.utc).date().isoformat()))
-    parser.add_argument("--bucket", default=os.getenv("S3_BUCKET", "olist-data"))
+    parser.add_argument("--container", default=os.getenv("AZURE_STORAGE_CONTAINER", "olist-data"))
     parser.add_argument("--output-prefix", default=os.getenv("BRONZE_PREFIX", "bronze"))
     return parser.parse_args()
 
@@ -45,24 +44,20 @@ def validate_batch_date(value: str) -> str:
 
 
 def build_spark() -> SparkSession:
-    endpoint = os.getenv("S3_ENDPOINT", "http://minio:9000")
-    access_key = os.getenv("S3_ACCESS_KEY", "minioadmin")
-    secret_key = os.getenv("S3_SECRET_KEY", "minioadmin")
-    region = os.getenv("S3_REGION", "us-east-1")
-
-    return (
+    account = os.getenv("AZURE_STORAGE_ACCOUNT", "storageemulator")
+    builder = (
         SparkSession.builder
         .appName("olist-bronze-ingestion")
-        .config("spark.hadoop.fs.s3a.endpoint", endpoint)
-        .config("spark.hadoop.fs.s3a.access.key", access_key)
-        .config("spark.hadoop.fs.s3a.secret.key", secret_key)
-        .config("spark.hadoop.fs.s3a.path.style.access", "true")
-        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", endpoint.startswith("https://").__str__().lower())
-        .config("spark.hadoop.fs.s3a.endpoint.region", region)
-        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.sql.session.timeZone", "UTC")
-        .getOrCreate()
     )
+    if account != "storageemulator":
+        key = os.environ.get("AZURE_STORAGE_KEY")
+        if not key:
+            raise ValueError("AZURE_STORAGE_KEY is required for Azure Blob Storage")
+        builder = builder.config(
+            f"spark.hadoop.fs.azure.account.key.{account}.blob.core.windows.net", key
+        )
+    return builder.getOrCreate()
 
 
 def main() -> int:
@@ -102,8 +97,13 @@ def main() -> int:
               .withColumn("_dataset", lit(args.dataset))
         )
 
+        account = os.getenv("AZURE_STORAGE_ACCOUNT", "storageemulator")
+        if account == "storageemulator":
+            storage = f"wasb://{args.container}@storageemulator"
+        else:
+            storage = f"wasbs://{args.container}@{account}.blob.core.windows.net"
         output = (
-            f"s3a://{args.bucket}/{args.output_prefix}/"
+            f"{storage}/{args.output_prefix}/"
             f"{args.dataset}/batch_date={batch_date}"
         )
 
