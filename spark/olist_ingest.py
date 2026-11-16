@@ -6,12 +6,11 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import current_timestamp, input_file_name, lit
-
 
 DATASETS = {
     "customers": "olist_customers_dataset.csv",
@@ -30,7 +29,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", required=True, choices=sorted(DATASETS))
     parser.add_argument("--input-dir", default=os.getenv("OLIST_INPUT_DIR", "/opt/airflow/data/olist"))
-    parser.add_argument("--batch-date", default=os.getenv("BATCH_DATE", datetime.now(timezone.utc).date().isoformat()))
+    parser.add_argument(
+        "--batch-date",
+        default=os.getenv("BATCH_DATE", datetime.now(UTC).date().isoformat()),
+    )
     parser.add_argument("--container", default=os.getenv("AZURE_STORAGE_CONTAINER", "olist-data"))
     parser.add_argument("--output-prefix", default=os.getenv("BRONZE_PREFIX", "bronze"))
     return parser.parse_args()
@@ -45,18 +47,12 @@ def validate_batch_date(value: str) -> str:
 
 def build_spark() -> SparkSession:
     account = os.getenv("AZURE_STORAGE_ACCOUNT", "storageemulator")
-    builder = (
-        SparkSession.builder
-        .appName("olist-bronze-ingestion")
-        .config("spark.sql.session.timeZone", "UTC")
-    )
+    builder = SparkSession.builder.appName("olist-bronze-ingestion").config("spark.sql.session.timeZone", "UTC")
     if account != "storageemulator":
         key = os.environ.get("AZURE_STORAGE_KEY")
         if not key:
             raise ValueError("AZURE_STORAGE_KEY is required for Azure Blob Storage")
-        builder = builder.config(
-            f"spark.hadoop.fs.azure.account.key.{account}.blob.core.windows.net", key
-        )
+        builder = builder.config(f"spark.hadoop.fs.azure.account.key.{account}.blob.core.windows.net", key)
     return builder.getOrCreate()
 
 
@@ -79,8 +75,7 @@ def main() -> int:
     try:
         # Keep source fields as strings in Bronze; cast and standardize in Silver.
         df = (
-            spark.read
-            .option("header", "true")
+            spark.read.option("header", "true")
             .option("inferSchema", "false")
             .option("mode", "FAILFAST")
             .option("encoding", "UTF-8")
@@ -92,9 +87,9 @@ def main() -> int:
 
         df = (
             df.withColumn("_ingested_at", current_timestamp())
-              .withColumn("_source_file", input_file_name())
-              .withColumn("_batch_id", lit(batch_date))
-              .withColumn("_dataset", lit(args.dataset))
+            .withColumn("_source_file", input_file_name())
+            .withColumn("_batch_id", lit(batch_date))
+            .withColumn("_dataset", lit(args.dataset))
         )
 
         account = os.getenv("AZURE_STORAGE_ACCOUNT", "storageemulator")
@@ -102,19 +97,11 @@ def main() -> int:
             storage = f"wasb://{args.container}@storageemulator"
         else:
             storage = f"wasbs://{args.container}@{account}.blob.core.windows.net"
-        output = (
-            f"{storage}/{args.output_prefix}/"
-            f"{args.dataset}/batch_date={batch_date}"
-        )
+        output = f"{storage}/{args.output_prefix}/{args.dataset}/batch_date={batch_date}"
 
         # Overwrite only this dataset's batch-date folder. Retries are idempotent
         # for a given dataset + batch date; other dates remain untouched.
-        (
-            df.write
-            .mode("overwrite")
-            .format("parquet")
-            .save(output)
-        )
+        (df.write.mode("overwrite").format("parquet").save(output))
 
         print(f"SUCCESS dataset={args.dataset} output={output} rows={df.count()}")
         return 0
