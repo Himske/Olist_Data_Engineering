@@ -78,6 +78,8 @@ def main() -> int:
             spark.read.option("header", "true")
             .option("inferSchema", "false")
             .option("mode", "FAILFAST")
+            .option("multiLine", "true")
+            .option("escape", '"')
             .option("encoding", "UTF-8")
             .csv(str(source))
         )

@@ -67,13 +67,22 @@ def test_storage_paths_and_cloud_credentials(ingest, spark_mocks, tmp_path, monk
         sys, "argv", ["olist_ingest.py", "--dataset", "orders", "--input-dir", str(tmp_path),
                       "--batch-date", "2018-10-17"]
     )
-    frame = spark_session.read.option.return_value.option.return_value.option.return_value.option.return_value.csv.return_value
+    frame = (
+        spark_session.read.option.return_value.option.return_value.option.return_value.option.return_value
+        .option.return_value.option.return_value.csv.return_value
+    )
     frame.columns = ["order_id"]
     frame.withColumn.return_value = frame
 
     with patch.dict(os.environ, environment, clear=True):
         assert ingest.main() == 0
 
+    spark_session.read.option.return_value.option.return_value.option.return_value.option.assert_any_call(
+        "multiLine", "true"
+    )
+    spark_session.read.option.return_value.option.return_value.option.return_value.option.return_value.option.assert_any_call(
+        "escape", '"'
+    )
     frame.write.mode.return_value.format.return_value.save.assert_called_once_with(
         f"{root}/bronze/orders/batch_date=2018-10-17"
     )
