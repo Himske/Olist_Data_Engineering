@@ -21,6 +21,7 @@ def silver(monkeypatch):
     for name in ("col", "current_timestamp", "input_file_name", "lit", "to_timestamp", "trim", "when"):
         setattr(functions, name, MagicMock())
     functions.col.return_value.__gt__.return_value = MagicMock()
+    functions.col.return_value.__lt__.return_value = MagicMock()
     spark_types = types.ModuleType("pyspark.sql.types")
     spark_types.DecimalType = lambda precision, scale: ("decimal", precision, scale)
     spark_types.StringType = FakeStringType
@@ -131,3 +132,51 @@ def test_cloud_storage_requires_a_key(silver, monkeypatch):
         module.build_spark()
 
     builder.getOrCreate.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("row_count", "dataset", "layer"),
+    [(1, "orders", "Bronze"), (0, "orders", "Bronze"), (0, "orders", "Silver")],
+)
+def test_validate_row_count(silver, row_count, dataset, layer):
+    module, _ = silver
+
+    if row_count:
+        module.validate_row_count(row_count, dataset, layer)
+    else:
+        with pytest.raises(ValueError, match=f"{layer} input is empty"):
+            module.validate_row_count(row_count, dataset, layer)
+
+
+def test_source_quality_rejects_null_required_values(silver):
+    module, functions = silver
+    frame = MagicMock()
+    frame.columns = ["payment_type", "payment_value"]
+    frame.filter.return_value.limit.return_value.count.return_value = 1
+
+    with pytest.raises(ValueError, match="order_payments.payment_type contains null"):
+        module.validate_source_quality(frame, "order_payments")
+
+    functions.col.assert_called_with("payment_type")
+
+
+def test_source_quality_rejects_unsupported_status(silver):
+    module, functions = silver
+    frame = MagicMock()
+    frame.columns = ["order_status", "order_purchase_timestamp"]
+    frame.filter.return_value.limit.return_value.count.side_effect = [0, 0, 1]
+
+    with pytest.raises(ValueError, match="orders.order_status contains an unsupported"):
+        module.validate_source_quality(frame, "orders")
+
+    functions.col.assert_any_call("order_status")
+
+
+def test_source_quality_rejects_negative_amounts(silver):
+    module, _ = silver
+    frame = MagicMock()
+    frame.columns = ["price", "freight_value"]
+    frame.filter.return_value.limit.return_value.count.side_effect = [0, 0, 1]
+
+    with pytest.raises(ValueError, match="order_items.price contains a negative"):
+        module.validate_source_quality(frame, "order_items")

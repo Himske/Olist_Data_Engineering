@@ -1,0 +1,13 @@
+name: olist_analytics
+version: "1.0.0"
+config-version: 2
+profile: olist_analytics
+
+model-paths: ["models"]
+test-paths: ["tests"]
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  olist_analytics:
+    +materialized: table
+    +location_root: "{{ env_var('DBT_OUTPUT_ROOT', 'wasb://olist-data@storageemulator/dbt') }}/{{ var('batch_date', 'adhoc') }}"

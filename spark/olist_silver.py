@@ -47,6 +47,39 @@ FOREIGN_KEYS = (
     ("order_payments", "order_id", "orders", "order_id"),
     ("order_reviews", "order_id", "orders", "order_id"),
 )
+REQUIRED_VALUE_COLUMNS = {
+    "customers": ("customer_unique_id",),
+    "order_items": ("price", "freight_value"),
+    "order_payments": ("payment_type", "payment_value"),
+    "order_reviews": ("review_score",),
+    "orders": ("order_status", "order_purchase_timestamp"),
+    "sellers": ("seller_state",),
+    "category_translation": ("product_category_name_english",),
+}
+NONNEGATIVE_COLUMNS = {
+    "order_items": ("price", "freight_value"),
+    "order_payments": ("payment_value",),
+}
+ACCEPTED_VALUES = {
+    ("order_payments", "payment_type"): (
+        "credit_card",
+        "boleto",
+        "voucher",
+        "debit_card",
+        "not_defined",
+    ),
+    ("orders", "order_status"): (
+        "created",
+        "approved",
+        "invoiced",
+        "processing",
+        "shipped",
+        "delivered",
+        "unavailable",
+        "canceled",
+    ),
+    ("order_reviews", "review_score"): ("1", "2", "3", "4", "5"),
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -85,6 +118,30 @@ def require_columns(df: DataFrame, dataset: str, columns: tuple[str, ...]) -> No
     missing = sorted(set(columns) - set(df.columns))
     if missing:
         raise ValueError(f"{dataset} is missing required columns: {', '.join(missing)}")
+
+
+def validate_row_count(row_count: int, dataset: str, layer: str) -> None:
+    if row_count == 0:
+        raise ValueError(f"{layer} input is empty: {dataset}")
+
+
+def validate_source_quality(df: DataFrame, dataset: str) -> None:
+    for column in REQUIRED_VALUE_COLUMNS.get(dataset, ()):
+        require_columns(df, dataset, (column,))
+        if df.filter(F.col(column).isNull()).limit(1).count():
+            raise ValueError(f"{dataset}.{column} contains null values")
+
+    for (rule_dataset, column), accepted in ACCEPTED_VALUES.items():
+        if rule_dataset != dataset:
+            continue
+        require_columns(df, dataset, (column,))
+        invalid = df.filter(F.col(column).isNotNull() & ~F.col(column).isin(*accepted)).limit(1).count()
+        if invalid:
+            raise ValueError(f"{dataset}.{column} contains an unsupported value")
+
+    for column in NONNEGATIVE_COLUMNS.get(dataset, ()):
+        if df.filter(F.col(column) < 0).limit(1).count():
+            raise ValueError(f"{dataset}.{column} contains a negative value")
 
 
 def normalize_missing_values(df: DataFrame) -> DataFrame:
@@ -176,16 +233,28 @@ def main() -> int:
 
     try:
         cleaned: dict[str, DataFrame] = {}
+        row_counts: dict[str, tuple[int, int]] = {}
         for dataset in DATASETS:
             input_path = f"{root}/{args.input_prefix}/{dataset}/batch_date={batch_date}"
             df = spark.read.parquet(input_path)
-            if not df.limit(1).count():
-                raise ValueError(f"Bronze input is empty: {input_path}")
+            source_rows = df.count()
+            validate_row_count(source_rows, dataset, "Bronze")
             cleaned[dataset] = clean_dataset(df, dataset)
+            silver_rows = cleaned[dataset].count()
+            validate_row_count(silver_rows, dataset, "Silver")
+            row_counts[dataset] = (source_rows, silver_rows)
 
         for dataset, columns in PRIMARY_KEYS.items():
             validate_primary_key(cleaned[dataset], dataset, columns)
+        for dataset, df in cleaned.items():
+            validate_source_quality(df, dataset)
         validate_foreign_keys(cleaned)
+
+        for dataset, (source_rows, silver_rows) in row_counts.items():
+            print(
+                f"QUALITY dataset={dataset} bronze_rows={source_rows} "
+                f"silver_rows={silver_rows} rows_removed_by_deduplication={source_rows - silver_rows}"
+            )
 
         for dataset, df in cleaned.items():
             output_path = f"{root}/{args.output_prefix}/{dataset}/batch_date={batch_date}"
