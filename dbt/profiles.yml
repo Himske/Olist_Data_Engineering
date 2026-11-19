@@ -1,0 +1,13 @@
+olist_analytics:
+  target: local
+  outputs:
+    local:
+      type: spark
+      method: session
+      host: localhost
+      schema: default
+      threads: 1
+      server_side_parameters:
+        spark.jars.packages: org.apache.hadoop:hadoop-azure:3.3.4
+        spark.sql.session.timeZone: UTC
+        spark.hadoop.fs.azure.account.key.{{ env_var('AZURE_STORAGE_ACCOUNT', 'storageemulator') }}.blob.core.windows.net: "{{ env_var('AZURE_STORAGE_KEY', '') }}"

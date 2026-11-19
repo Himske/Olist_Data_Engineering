@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "apache-airflow==2.9.3",
+    "dbt-spark[session]==1.9.2",
     "pendulum>=3.0,<4",
     "pyspark==3.5.1",
     "pytest>=9.2.0",

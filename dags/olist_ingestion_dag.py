@@ -5,6 +5,7 @@ from datetime import timedelta
 import pendulum
 from airflow import DAG
 from airflow.operators.bash import BashOperator
+from notifications import notify_failure
 
 DATASETS = [
     "customers",
@@ -22,12 +23,14 @@ DATASETS = [
 SPARK_SUBMIT = "/opt/spark/bin/spark-submit"
 SCRIPT = "/opt/airflow/project/spark/olist_ingest.py"
 SILVER_SCRIPT = "/opt/airflow/project/spark/olist_silver.py"
+DBT_PROJECT = "/opt/airflow/project/dbt"
 
 default_args = {
     "owner": "data-engineering",
     "depends_on_past": False,
     "retries": 2,
     "retry_delay": timedelta(minutes=5),
+    "on_failure_callback": notify_failure,
 }
 
 with DAG(
@@ -75,3 +78,17 @@ with DAG(
         do_xcom_push=False,
     )
     ingestion_tasks >> silver_task
+
+    dbt_task = BashOperator(
+        task_id="build_dbt_models",
+        bash_command=(
+            f"cd {DBT_PROJECT} && dbt build --project-dir {DBT_PROJECT} "
+            f"--profiles-dir {DBT_PROJECT} --vars '{{\"batch_date\": \"{{{{ ds }}}}\"}}'"
+        ),
+        env={
+            "PYSPARK_PYTHON": "python3",
+        },
+        append_env=True,
+        do_xcom_push=False,
+    )
+    silver_task >> dbt_task

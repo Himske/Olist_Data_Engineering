@@ -6,7 +6,7 @@ RUN apt-get update \
     && apt-get clean
 
 USER airflow
-RUN pip install --no-cache-dir "apache-airflow==2.9.3" "pyspark==3.5.1"
+RUN pip install --no-cache-dir "apache-airflow==2.9.3" "pyspark==3.5.1" "dbt-spark[session]==1.9.2"
 
 USER root
 RUN ln -s /home/airflow/.local/lib/python3.11/site-packages/pyspark /opt/spark

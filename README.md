@@ -175,7 +175,8 @@ The Compose setup mounts the DAG, Spark script, and source data at the required
 paths. For another Airflow deployment, copy the DAG into its DAGs folder and
 mount the Spark script and source data at the paths configured in the DAG.
 After all nine Bronze tasks succeed, the DAG runs one Silver task for the same
-batch date. The DAG runs daily at 03:00 UTC. Because Olist is a static
+batch date, then runs the dbt models and tests. The DAG runs daily at 03:00 UTC.
+Because Olist is a static
 historical dataset, this schedule is a demonstration: for a realistic
 incremental simulation, create daily source extracts or add a parameterized
 event-date filter in a later iteration.
@@ -208,11 +209,39 @@ Set `BRONZE_PREFIX` or `SILVER_PREFIX` to override the default prefixes. The
 job uses the same Azure storage environment variables and credentials as the
 Bronze job.
 
-## Important next steps
+The Silver task validates non-empty batch counts, required values, nonnegative
+monetary values, accepted order/payment/review values, primary keys, and foreign keys. Its logs include
+Bronze/Silver row counts and the number of rows removed by deduplication.
 
-1. Add row-count and broader source-quality checks.
-2. Add dbt models and tests after the Silver tables are available.
-3. Add a failure notification channel and CI tests.
+## dbt models and tests
+
+The dbt project reads the Silver Parquet batch and builds staging models for
+orders and order items, plus an order-revenue mart. It tests keys, required
+fields, accepted order statuses, and revenue output. The DAG runs `dbt build`
+after Silver for the same Airflow logical date.
+
+The dbt Spark session uses the same storage and Hadoop Azure settings as the
+Spark jobs. `SILVER_ROOT` can override the default Silver root, and
+`DBT_OUTPUT_ROOT` can override the dbt table output root. Run the models
+manually from the repository root with:
+
+```bash
+dbt build --project-dir dbt --profiles-dir dbt \
+  --vars '{"batch_date": "2018-10-17"}'
+```
+
+## Failure email and CI
+
+Set `AIRFLOW_FAILURE_EMAIL` to one or more comma-separated recipients and
+configure SMTP using Airflow's `AIRFLOW__SMTP__SMTP_*` environment variables.
+The Compose file passes these values through; keep SMTP credentials in the
+untracked root `.env` file or a secrets backend, never in the repository. When
+no recipients are configured, failures are logged without attempting email.
+
+GitHub Actions runs the unit tests, Ruff, and a dbt project parse check on pushes
+and pull requests. The local equivalent is `python -m pytest tests -v`,
+`ruff check spark dags tests`, and
+`dbt parse --project-dir dbt --profiles-dir dbt`.
 
 ## Notes
 

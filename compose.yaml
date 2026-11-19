@@ -12,9 +12,17 @@ x-airflow-common: &airflow-common
     AZURE_STORAGE_ACCOUNT: "${AZURE_STORAGE_ACCOUNT:-storageemulator}"
     AZURE_STORAGE_CONTAINER: "${AZURE_STORAGE_CONTAINER:-olist-data}"
     AZURE_STORAGE_KEY: "${AZURE_STORAGE_KEY:-}"
+    AIRFLOW_FAILURE_EMAIL: "${AIRFLOW_FAILURE_EMAIL:-}"
+    AIRFLOW__SMTP__SMTP_HOST: "${AIRFLOW__SMTP__SMTP_HOST:-localhost}"
+    AIRFLOW__SMTP__SMTP_PORT: "${AIRFLOW__SMTP__SMTP_PORT:-587}"
+    AIRFLOW__SMTP__SMTP_STARTTLS: "${AIRFLOW__SMTP__SMTP_STARTTLS:-true}"
+    AIRFLOW__SMTP__SMTP_SSL: "${AIRFLOW__SMTP__SMTP_SSL:-false}"
+    AIRFLOW__SMTP__SMTP_USER: "${AIRFLOW__SMTP__SMTP_USER:-}"
+    AIRFLOW__SMTP__SMTP_PASSWORD: "${AIRFLOW__SMTP__SMTP_PASSWORD:-}"
   volumes:
     - ./dags:/opt/airflow/dags:ro
     - ./spark:/opt/airflow/project/spark:ro
+    - ./dbt:/opt/airflow/project/dbt:ro
     - ./data/olist:/opt/airflow/data/olist:ro
     - airflow-logs:/opt/airflow/logs
 
