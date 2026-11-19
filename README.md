@@ -174,19 +174,45 @@ The container can also be selected with `--container`.
 The Compose setup mounts the DAG, Spark script, and source data at the required
 paths. For another Airflow deployment, copy the DAG into its DAGs folder and
 mount the Spark script and source data at the paths configured in the DAG.
-The DAG runs daily at 03:00 UTC. Because Olist is a static historical dataset,
-this schedule is a demonstration: for a realistic incremental simulation,
-create daily source extracts or add a parameterized event-date filter in a
-later iteration.
+After all nine Bronze tasks succeed, the DAG runs one Silver task for the same
+batch date. The DAG runs daily at 03:00 UTC. Because Olist is a static
+historical dataset, this schedule is a demonstration: for a realistic
+incremental simulation, create daily source extracts or add a parameterized
+event-date filter in a later iteration.
+
+## Silver layer
+
+The Spark job reads all nine datasets from
+`<prefix>/<dataset>/batch_date=<date>` under the `bronze` prefix, then writes
+cleaned Parquet to the same layout under the `silver` prefix. It trims string
+values and converts empty strings to nulls, converts order/review/shipping
+timestamps to timestamps, and converts item prices, freight, and payment values
+to decimals with two fractional digits. Optional missing values remain null.
+Exact duplicate rows are removed; duplicate or null primary keys and unmatched
+foreign keys fail the task rather than silently dropping records. Foreign-key
+checks cover orders/customers, order items/orders/products/sellers, payments/
+orders, and reviews/orders. Order reviews use `(review_id, order_id)` as a
+composite key because review identifiers repeat across different orders in
+the supplied source data.
+
+To run it manually after all nine Bronze batches have completed:
+
+```bash
+spark-submit \
+  --packages org.apache.hadoop:hadoop-azure:3.3.4 \
+  spark/olist_silver.py \
+  --batch-date 2018-10-17
+```
+
+Set `BRONZE_PREFIX` or `SILVER_PREFIX` to override the default prefixes. The
+job uses the same Azure storage environment variables and credentials as the
+Bronze job.
 
 ## Important next steps
 
-1. Automate Azure Blob container initialization.
-2. Add source-level schema contracts and expected-column checks.
-3. Add a Silver job to cast dates, numeric values, and identifiers.
-4. Add row-count and duplicate-key checks.
-5. Add dbt models and tests after the Silver tables are available.
-6. Add a failure notification channel and CI tests.
+1. Add row-count and broader source-quality checks.
+2. Add dbt models and tests after the Silver tables are available.
+3. Add a failure notification channel and CI tests.
 
 ## Notes
 

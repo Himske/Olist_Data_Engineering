@@ -1,4 +1,4 @@
-"""Airflow DAG: parallel ingestion of Olist CSVs into Azure Blob Bronze."""
+"""Airflow DAG: ingest Olist CSVs into Bronze, then build Silver Parquet."""
 
 from datetime import timedelta
 
@@ -21,6 +21,7 @@ DATASETS = [
 # These paths must exist inside the Airflow worker/scheduler container.
 SPARK_SUBMIT = "/opt/spark/bin/spark-submit"
 SCRIPT = "/opt/airflow/project/spark/olist_ingest.py"
+SILVER_SCRIPT = "/opt/airflow/project/spark/olist_silver.py"
 
 default_args = {
     "owner": "data-engineering",
@@ -31,7 +32,7 @@ default_args = {
 
 with DAG(
     dag_id="olist_bronze_ingestion",
-    description="Ingest all Olist source CSVs into Azure Blob Bronze as Parquet",
+    description="Ingest Olist CSVs into Bronze and build validated Silver Parquet",
     default_args=default_args,
     start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
     schedule="0 3 * * *",
@@ -39,8 +40,9 @@ with DAG(
     max_active_runs=1,
     tags=["olist", "pyspark", "azure", "bronze"],
 ) as dag:
+    ingestion_tasks = []
     for dataset in DATASETS:
-        BashOperator(
+        task = BashOperator(
             task_id=f"ingest_{dataset}",
             bash_command=(
                 f"{SPARK_SUBMIT} "
@@ -56,3 +58,20 @@ with DAG(
             append_env=True,
             do_xcom_push=False,
         )
+        ingestion_tasks.append(task)
+
+    silver_task = BashOperator(
+        task_id="build_silver",
+        bash_command=(
+            f"{SPARK_SUBMIT} "
+            "--packages org.apache.hadoop:hadoop-azure:3.3.4 "
+            f"{SILVER_SCRIPT} "
+            "--batch-date '{{ ds }}'"
+        ),
+        env={
+            "PYSPARK_PYTHON": "python3",
+        },
+        append_env=True,
+        do_xcom_push=False,
+    )
+    ingestion_tasks >> silver_task
